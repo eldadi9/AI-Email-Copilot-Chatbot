@@ -1,0 +1,703 @@
+{
+  "name": "AI Email Copilot - Telegram Confirmation Executor",
+  "nodes": [
+    {
+      "id": "tg_trigger_confirm",
+      "name": "Telegram Trigger Message",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1,
+      "position": [200, 200],
+      "parameters": {
+        "updates": ["message"]
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "id": "set_confirm_input",
+      "name": "Set Normalize Confirmation Input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [420, 200],
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            { "name": "chat.user_id", "value": "={{$json.message.from.id}}" },
+            { "name": "chat.chat_id", "value": "={{$json.message.chat.id}}" },
+            { "name": "chat.text", "value": "={{$json.message.text}}" },
+            { "name": "chat.message_id", "value": "={{$json.message.message_id}}" },
+            { "name": "chat.correlation_id", "value": "={{$json.message.message_id}}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "if_is_confirm",
+      "name": "IF Is Confirmation Message",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [640, 200],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json['chat.text']}}",
+              "operation": "in",
+              "value2": "confirm,approve,yes,אשר"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "noop_ignore_non_confirm",
+      "name": "NoOp Ignore Non Confirmation",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [860, 80],
+      "parameters": {}
+    },
+    {
+      "id": "ds_get_pending",
+      "name": "DataStore Get Pending Action",
+      "type": "n8n-nodes-base.dataStore",
+      "typeVersion": 1,
+      "position": [860, 260],
+      "parameters": {
+        "operation": "get",
+        "key": "={{'pending:' + $json['chat.user_id']}}"
+      }
+    },
+    {
+      "id": "if_pending_exists",
+      "name": "IF Pending Exists",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1080, 260],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.value}}",
+              "operation": "notEmpty"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "tg_no_pending",
+      "name": "Telegram Send Response - No Pending",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1300, 160],
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{$json['chat.chat_id']}}",
+        "text": "אין פעולה שממתינה לאישור כרגע."
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "id": "code_parse_pending",
+      "name": "Code Parse Pending JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 320],
+      "parameters": {
+        "jsCode": "let pending;\ntry {\n  pending = typeof $json.value === 'string' ? JSON.parse($json.value) : $json.value;\n} catch (e) {\n  return [{ json: { ...$json, pending: null, pending_valid: false, pending_error: 'pending_json_parse_failed' } }];\n}\nreturn [{ json: { ...$json, pending, pending_valid: true } }];"
+      }
+    },
+    {
+      "id": "code_validate_pending",
+      "name": "Code Validate Pending Action",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1520, 320],
+      "parameters": {
+        "jsCode": "const p = $json.pending;\nconst errors = [];\nconst allowed = new Set(['gmail.draft','gmail.archive','gmail.mark_read','gmail.label']);\nif (!p || typeof p !== 'object') errors.push('pending_missing');\nif (!p.action_type || !allowed.has(p.action_type)) errors.push('pending_action_type_invalid');\nif (!p.params || typeof p.params !== 'object') errors.push('pending_params_missing');\n\n// Basic safety: limit for bulk if ids/query exists\nconst params = p?.params || {};\nconst isBulk = (Array.isArray(params.ids) && params.ids.length > 1) || (typeof params.query === 'string' && params.query.length > 0);\nif (isBulk) {\n  const limit = params.limit ?? 10;\n  if (typeof limit !== 'number' || limit < 1 || limit > 50) errors.push('bulk_limit_required_1_to_50');\n}\n\n// Draft requires minimal fields\nif (p?.action_type === 'gmail.draft') {\n  if (!params.message || typeof params.message !== 'string') errors.push('draft_message_missing');\n  if (!params.subject || typeof params.subject !== 'string') errors.push('draft_subject_missing');\n  // emailType optional, default text\n}\n\nreturn [{ json: { ...$json, pending_validation: { valid: errors.length === 0, errors, is_bulk: isBulk } } }];"
+      }
+    },
+    {
+      "id": "if_pending_invalid",
+      "name": "IF Pending Invalid",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1740, 320],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            { "value1": "={{$json.pending_validation.valid}}", "operation": "isFalse" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "tg_pending_invalid",
+      "name": "Telegram Send Response - Pending Invalid",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1960, 240],
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{$json['chat.chat_id']}}",
+        "text": "הפעולה הממתינה לאישור לא תקינה או חסר מידע. נסה שוב מההתחלה."
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "id": "switch_pending_type",
+      "name": "Switch Pending Action Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 2,
+      "position": [1960, 400],
+      "parameters": {
+        "value1": "={{$json.pending.action_type}}",
+        "rules": [
+          { "operation": "equal", "value2": "gmail.draft" },
+          { "operation": "equal", "value2": "gmail.archive" },
+          { "operation": "equal", "value2": "gmail.mark_read" },
+          { "operation": "equal", "value2": "gmail.label" }
+        ]
+      }
+    },
+
+    {
+      "id": "gmail_create_draft",
+      "name": "Gmail Create Draft",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [2180, 260],
+      "parameters": {
+        "resource": "draft",
+        "subject": "={{$json.pending.params.subject}}",
+        "emailType": "={{$json.pending.params.emailType || 'text'}}",
+        "message": "={{$json.pending.params.message}}",
+        "options": {
+          "threadId": "={{$json.pending.params.thread_id || $json.pending.params.threadId || undefined}}",
+          "toEmail": "={{$json.pending.params.to || $json.pending.params.toEmail || undefined}}",
+          "cc": "={{$json.pending.params.cc || undefined}}",
+          "bcc": "={{$json.pending.params.bcc || undefined}}",
+          "sendRepliesTo": "={{$json.pending.params.replyTo || undefined}}"
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_ME",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "id": "ds_delete_pending_after_draft",
+      "name": "DataStore Delete Pending Action",
+      "type": "n8n-nodes-base.dataStore",
+      "typeVersion": 1,
+      "position": [2400, 260],
+      "parameters": {
+        "operation": "delete",
+        "key": "={{'pending:' + $json['chat.user_id']}}"
+      }
+    },
+    {
+      "id": "ds_log_audit_draft",
+      "name": "DataStore Log Action Audit",
+      "type": "n8n-nodes-base.dataStore",
+      "typeVersion": 1,
+      "position": [2620, 260],
+      "parameters": {
+        "operation": "set",
+        "key": "={{'audit:' + $json['chat.user_id'] + ':' + $json['chat.correlation_id']}}",
+        "value": "={{JSON.stringify({ user_id: $json['chat.user_id'], correlation_id: $json['chat.correlation_id'], executed: true, action_type: $json.pending.action_type, params: $json.pending.params, ts: new Date().toISOString() })}}"
+      }
+    },
+    {
+      "id": "tg_draft_done",
+      "name": "Telegram Send Response - Draft Created",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [2840, 260],
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{$json['chat.chat_id']}}",
+        "text": "טיוטה נוצרה בהצלחה (לא נשלחה)."
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram account"
+        }
+      }
+    },
+
+    {
+      "id": "code_extract_targets",
+      "name": "Code Extract Targets From Pending",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2180, 460],
+      "parameters": {
+        "jsCode": "const p = $json.pending;\nconst params = p.params || {};\nconst out = {\n  action_type: p.action_type,\n  limit: params.limit ?? 10,\n  query: typeof params.query === 'string' ? params.query : null,\n  ids: Array.isArray(params.ids) ? params.ids : (params.id ? [params.id] : []),\n  label_add: Array.isArray(params.add_label_ids) ? params.add_label_ids : (Array.isArray(params.label_add) ? params.label_add : []),\n  label_remove: Array.isArray(params.remove_label_ids) ? params.remove_label_ids : (Array.isArray(params.label_remove) ? params.label_remove : [])\n};\nreturn [{ json: { ...$json, exec: out } }];"
+      }
+    },
+    {
+      "id": "if_has_query",
+      "name": "IF Has Query",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2400, 460],
+      "parameters": {
+        "conditions": {
+          "string": [
+            { "value1": "={{$json.exec.query}}", "operation": "notEmpty" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "gmail_fetch_by_query",
+      "name": "Gmail Fetch Messages By Query",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [2620, 360],
+      "parameters": {
+        "resource": "message",
+        "operation": "getAll",
+        "limit": "={{$json.exec.limit}}",
+        "additionalFields": {
+          "q": "={{$json.exec.query}}"
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_ME",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "id": "code_expand_ids",
+      "name": "Code Expand IDs To Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2620, 560],
+      "parameters": {
+        "jsCode": "const ids = $json.exec.ids || [];\nif (!ids.length) {\n  return [{ json: { ...$json, id: null, _skip: true, reason: 'no_targets' } }];\n}\nreturn ids.map(id => ({ json: { ...$json, id } }));"
+      }
+    },
+    {
+      "id": "merge_targets",
+      "name": "Merge Targets",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [2840, 460],
+      "parameters": {
+        "mode": "append"
+      }
+    },
+    {
+      "id": "code_attach_context",
+      "name": "Code Attach Action Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3060, 460],
+      "parameters": {
+        "jsCode": "const exec = $json.exec;\nconst id = $json.id;\nif ($json._skip || !id) {\n  return [{ json: { ...$json, status: 'skipped', reason: $json.reason || 'no_id' } }];\n}\nreturn [{ json: { ...$json, target: { messageId: id }, action_type: exec.action_type, label_add: exec.label_add, label_remove: exec.label_remove } }];"
+      }
+    },
+    {
+      "id": "code_build_idem_key",
+      "name": "Code Build Idempotency Key",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3280, 460],
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst action = $json.action_type;\nconst mid = $json.target?.messageId || 'none';\nconst add = Array.isArray($json.label_add) ? $json.label_add.join(',') : '';\nconst rem = Array.isArray($json.label_remove) ? $json.label_remove.join(',') : '';\nconst raw = `${$json['chat.user_id']}|${action}|${mid}|${add}|${rem}`;\nconst key = crypto.createHash('sha256').update(raw).digest('hex');\nreturn [{ json: { ...$json, idem: { key } } }];"
+      }
+    },
+    {
+      "id": "ds_get_idem",
+      "name": "DataStore Get Idempotency",
+      "type": "n8n-nodes-base.dataStore",
+      "typeVersion": 1,
+      "position": [3500, 460],
+      "parameters": {
+        "operation": "get",
+        "key": "={{'idem:' + $json.idem.key}}"
+      }
+    },
+    {
+      "id": "if_already_processed",
+      "name": "IF Already Processed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3720, 460],
+      "parameters": {
+        "conditions": {
+          "string": [
+            { "value1": "={{$json.value}}", "operation": "notEmpty" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "code_mark_skipped",
+      "name": "Code Mark Skipped",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3940, 360],
+      "parameters": {
+        "jsCode": "return [{ json: { ...$json, status: 'skipped', reason: 'idempotent' } }];"
+      }
+    },
+    {
+      "id": "switch_exec_item",
+      "name": "Switch Execute Per Item",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 2,
+      "position": [3940, 560],
+      "parameters": {
+        "value1": "={{$json.action_type}}",
+        "rules": [
+          { "operation": "equal", "value2": "gmail.mark_read" },
+          { "operation": "equal", "value2": "gmail.archive" },
+          { "operation": "equal", "value2": "gmail.label" }
+        ]
+      }
+    },
+    {
+      "id": "gmail_mark_read",
+      "name": "Gmail Mark As Read",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [4160, 480],
+      "continueOnFail": true,
+      "parameters": {
+        "operation": "markAsRead",
+        "messageId": "={{$json.target.messageId}}"
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_ME",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "id": "gmail_archive_remove_inbox",
+      "name": "Gmail Archive (Remove INBOX Label)",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [4160, 600],
+      "continueOnFail": true,
+      "parameters": {
+        "operation": "removeLabels",
+        "messageId": "={{$json.target.messageId}}",
+        "labelIds": ["INBOX"]
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_ME",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "id": "if_has_add_labels",
+      "name": "IF Has Add Labels",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [4160, 720],
+      "parameters": {
+        "conditions": {
+          "number": [
+            { "value1": "={{($json.label_add || []).length}}", "operation": "larger", "value2": 0 }
+          ]
+        }
+      }
+    },
+    {
+      "id": "gmail_add_labels",
+      "name": "Gmail Add Labels",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [4380, 680],
+      "continueOnFail": true,
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{$json.target.messageId}}",
+        "labelIds": "={{$json.label_add}}"
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_ME",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "id": "if_has_remove_labels",
+      "name": "IF Has Remove Labels",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [4380, 820],
+      "parameters": {
+        "conditions": {
+          "number": [
+            { "value1": "={{($json.label_remove || []).length}}", "operation": "larger", "value2": 0 }
+          ]
+        }
+      }
+    },
+    {
+      "id": "gmail_remove_labels",
+      "name": "Gmail Remove Labels",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [4600, 780],
+      "continueOnFail": true,
+      "parameters": {
+        "operation": "removeLabels",
+        "messageId": "={{$json.target.messageId}}",
+        "labelIds": "={{$json.label_remove}}"
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_ME",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "id": "ds_set_idem",
+      "name": "DataStore Save Idempotency",
+      "type": "n8n-nodes-base.dataStore",
+      "typeVersion": 1,
+      "position": [4820, 560],
+      "parameters": {
+        "operation": "set",
+        "key": "={{'idem:' + $json.idem.key}}",
+        "value": "={{JSON.stringify({ ts: new Date().toISOString(), action_type: $json.action_type, messageId: $json.target?.messageId || null })}}"
+      }
+    },
+    {
+      "id": "code_set_status_done",
+      "name": "Code Set Status Done",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5040, 560],
+      "parameters": {
+        "jsCode": "return [{ json: { ...$json, status: $json.status || 'done' } }];"
+      }
+    },
+    {
+      "id": "code_reduce_summary",
+      "name": "Code Reduce To Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5260, 560],
+      "parameters": {
+        "jsCode": "const all = $input.all().map(i => i.json);\nconst total = all.length;\nconst skipped = all.filter(x => x.status === 'skipped').length;\nconst done = all.filter(x => x.status === 'done').length;\nconst actionType = all.find(x => x.action_type)?.action_type || ($json.pending?.action_type || 'unknown');\nreturn [{ json: { ...$json, summary: { action_type: actionType, total, done, skipped } } }];"
+      }
+    },
+    {
+      "id": "ds_delete_pending_after_exec",
+      "name": "DataStore Delete Pending Action (After Exec)",
+      "type": "n8n-nodes-base.dataStore",
+      "typeVersion": 1,
+      "position": [5480, 560],
+      "parameters": {
+        "operation": "delete",
+        "key": "={{'pending:' + $json['chat.user_id']}}"
+      }
+    },
+    {
+      "id": "ds_log_audit_exec",
+      "name": "DataStore Log Action Audit (Executed)",
+      "type": "n8n-nodes-base.dataStore",
+      "typeVersion": 1,
+      "position": [5700, 560],
+      "parameters": {
+        "operation": "set",
+        "key": "={{'audit:' + $json['chat.user_id'] + ':' + $json['chat.correlation_id']}}",
+        "value": "={{JSON.stringify({ user_id: $json['chat.user_id'], correlation_id: $json['chat.correlation_id'], executed: true, action_type: $json.summary.action_type, summary: $json.summary, ts: new Date().toISOString() })}}"
+      }
+    },
+    {
+      "id": "tg_exec_done",
+      "name": "Telegram Send Response - Execution Done",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [5920, 560],
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{$json['chat.chat_id']}}",
+        "text": "={{'בוצע: ' + $json.summary.action_type + '. סהכ: ' + $json.summary.total + ', בוצע: ' + $json.summary.done + ', דולג: ' + $json.summary.skipped}}"
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Trigger Message": {
+      "main": [[{ "node": "Set Normalize Confirmation Input", "type": "main", "index": 0 }]]
+    },
+    "Set Normalize Confirmation Input": {
+      "main": [[{ "node": "IF Is Confirmation Message", "type": "main", "index": 0 }]]
+    },
+    "IF Is Confirmation Message": {
+      "main": [
+        [{ "node": "DataStore Get Pending Action", "type": "main", "index": 0 }],
+        [{ "node": "NoOp Ignore Non Confirmation", "type": "main", "index": 0 }]
+      ]
+    },
+    "DataStore Get Pending Action": {
+      "main": [[{ "node": "IF Pending Exists", "type": "main", "index": 0 }]]
+    },
+    "IF Pending Exists": {
+      "main": [
+        [{ "node": "Code Parse Pending JSON", "type": "main", "index": 0 }],
+        [{ "node": "Telegram Send Response - No Pending", "type": "main", "index": 0 }]
+      ]
+    },
+    "Code Parse Pending JSON": {
+      "main": [[{ "node": "Code Validate Pending Action", "type": "main", "index": 0 }]]
+    },
+    "Code Validate Pending Action": {
+      "main": [[{ "node": "IF Pending Invalid", "type": "main", "index": 0 }]]
+    },
+    "IF Pending Invalid": {
+      "main": [
+        [{ "node": "Telegram Send Response - Pending Invalid", "type": "main", "index": 0 }],
+        [{ "node": "Switch Pending Action Type", "type": "main", "index": 0 }]
+      ]
+    },
+    "Switch Pending Action Type": {
+      "main": [
+        [{ "node": "Gmail Create Draft", "type": "main", "index": 0 }],
+        [{ "node": "Code Extract Targets From Pending", "type": "main", "index": 0 }],
+        [{ "node": "Code Extract Targets From Pending", "type": "main", "index": 0 }],
+        [{ "node": "Code Extract Targets From Pending", "type": "main", "index": 0 }]
+      ]
+    },
+
+    "Gmail Create Draft": {
+      "main": [[{ "node": "DataStore Delete Pending Action", "type": "main", "index": 0 }]]
+    },
+    "DataStore Delete Pending Action": {
+      "main": [[{ "node": "DataStore Log Action Audit", "type": "main", "index": 0 }]]
+    },
+    "DataStore Log Action Audit": {
+      "main": [[{ "node": "Telegram Send Response - Draft Created", "type": "main", "index": 0 }]]
+    },
+
+    "Code Extract Targets From Pending": {
+      "main": [[{ "node": "IF Has Query", "type": "main", "index": 0 }]]
+    },
+    "IF Has Query": {
+      "main": [
+        [{ "node": "Gmail Fetch Messages By Query", "type": "main", "index": 0 }],
+        [{ "node": "Code Expand IDs To Items", "type": "main", "index": 0 }]
+      ]
+    },
+    "Gmail Fetch Messages By Query": {
+      "main": [[{ "node": "Merge Targets", "type": "main", "index": 0 }]]
+    },
+    "Code Expand IDs To Items": {
+      "main": [[{ "node": "Merge Targets", "type": "main", "index": 1 }]]
+    },
+    "Merge Targets": {
+      "main": [[{ "node": "Code Attach Action Context", "type": "main", "index": 0 }]]
+    },
+    "Code Attach Action Context": {
+      "main": [[{ "node": "Code Build Idempotency Key", "type": "main", "index": 0 }]]
+    },
+    "Code Build Idempotency Key": {
+      "main": [[{ "node": "DataStore Get Idempotency", "type": "main", "index": 0 }]]
+    },
+    "DataStore Get Idempotency": {
+      "main": [[{ "node": "IF Already Processed", "type": "main", "index": 0 }]]
+    },
+    "IF Already Processed": {
+      "main": [
+        [{ "node": "Code Mark Skipped", "type": "main", "index": 0 }],
+        [{ "node": "Switch Execute Per Item", "type": "main", "index": 0 }]
+      ]
+    },
+    "Code Mark Skipped": {
+      "main": [[{ "node": "Code Reduce To Summary", "type": "main", "index": 0 }]]
+    },
+    "Switch Execute Per Item": {
+      "main": [
+        [{ "node": "Gmail Mark As Read", "type": "main", "index": 0 }],
+        [{ "node": "Gmail Archive (Remove INBOX Label)", "type": "main", "index": 0 }],
+        [{ "node": "IF Has Add Labels", "type": "main", "index": 0 }]
+      ]
+    },
+    "Gmail Mark As Read": {
+      "main": [[{ "node": "DataStore Save Idempotency", "type": "main", "index": 0 }]]
+    },
+    "Gmail Archive (Remove INBOX Label)": {
+      "main": [[{ "node": "DataStore Save Idempotency", "type": "main", "index": 0 }]]
+    },
+    "IF Has Add Labels": {
+      "main": [
+        [{ "node": "Gmail Add Labels", "type": "main", "index": 0 }],
+        [{ "node": "IF Has Remove Labels", "type": "main", "index": 0 }]
+      ]
+    },
+    "Gmail Add Labels": {
+      "main": [[{ "node": "IF Has Remove Labels", "type": "main", "index": 0 }]]
+    },
+    "IF Has Remove Labels": {
+      "main": [
+        [{ "node": "Gmail Remove Labels", "type": "main", "index": 0 }],
+        [{ "node": "DataStore Save Idempotency", "type": "main", "index": 0 }]
+      ]
+    },
+    "Gmail Remove Labels": {
+      "main": [[{ "node": "DataStore Save Idempotency", "type": "main", "index": 0 }]]
+    },
+    "DataStore Save Idempotency": {
+      "main": [[{ "node": "Code Set Status Done", "type": "main", "index": 0 }]]
+    },
+    "Code Set Status Done": {
+      "main": [[{ "node": "Code Reduce To Summary", "type": "main", "index": 0 }]]
+    },
+    "Code Reduce To Summary": {
+      "main": [[{ "node": "DataStore Delete Pending Action (After Exec)", "type": "main", "index": 0 }]]
+    },
+    "DataStore Delete Pending Action (After Exec)": {
+      "main": [[{ "node": "DataStore Log Action Audit (Executed)", "type": "main", "index": 0 }]]
+    },
+    "DataStore Log Action Audit (Executed)": {
+      "main": [[{ "node": "Telegram Send Response - Execution Done", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionTimeout": 300,
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true
+  },
+  "versionId": "1"
+}
